@@ -1,0 +1,27 @@
+{
+  "name": "realtime-webpage-subtitles",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Chrome/Edge MV3 extension + local Node backend that overlays real-time bilingual subtitles on any video webpage (whisper.cpp ASR + Xenova NLLB translation)",
+  "scripts": {
+    "dev": "pnpm --filter @app/server dev",
+    "build": "pnpm --filter @app/extension build && pnpm --filter @app/server build",
+    "lint": "prettier --check \"**/*.{ts,tsx,md,json}\"",
+    "format": "prettier --write \"**/*.{ts,tsx,md,json}\"",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "prettier": "^3.4.1",
+    "typescript": "^5.6.3"
+  },
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=20"
+  },
+  "pnpm": {
+    "overrides": {
+      "sharp": "workspace:@app/sharp-shim@*"
+    }
+  }
+}

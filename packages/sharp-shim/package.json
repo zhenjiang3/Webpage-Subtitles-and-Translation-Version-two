@@ -1,0 +1,19 @@
+{
+  "name": "@app/sharp-shim",
+  "version": "0.32.6-shim.1",
+  "private": true,
+  "description": "Sharp 兼容占位包（方案 A 零 API：仅做文本翻译，不使用图像处理）。当 @xenova/transformers 通过 ESM import / CJS require 加载 sharp 时，本包导出兼容的构造函数与静态属性，避免因 sharp 原生二进制缺失导致模块加载崩溃。",
+  "main": "index.cjs",
+  "types": "./index.d.cts",
+  "exports": {
+    ".": {
+      "types": "./index.d.cts",
+      "require": "./index.cjs",
+      "import": "./index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

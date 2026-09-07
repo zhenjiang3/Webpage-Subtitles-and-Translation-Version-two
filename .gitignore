@@ -1,0 +1,49 @@
+# 依赖
+node_modules
+.pnp
+.pnp.js
+.pnp.cjs
+.yarn/*
+
+# 构建产物
+dist
+build
+.turbo
+coverage
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# 运行时数据（临时音频块，不入库）
+apps/server/data/
+
+# whisper.cpp 本地离线工具（setup:offline 自动下载，体积大，不入库）
+apps/server/tools/whisper/
+
+# Xenova / HuggingFace 本地模型缓存（体积大 900MB+，首次翻译自动生成，不入库）
+.cache/
+apps/server/.cache/
+
+# 日志
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# 扩展构建产物
+apps/extension/dist/
+
+# 后端构建产物
+apps/server/dist/
+
+# 编辑器 / OS
+.vscode/*
+!.vscode/extensions.json
+.trae/
+.idea
+.DS_Store
+Thumbs.db
+
+# TS 构建信息
+*.tsbuildinfo
