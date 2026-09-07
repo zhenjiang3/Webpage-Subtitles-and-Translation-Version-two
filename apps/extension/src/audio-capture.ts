@@ -229,6 +229,16 @@ export function attachToVideo(
     if (!video.crossOrigin) video.crossOrigin = 'anonymous';
   } catch { /* noop */ }
 
+  // 主动尝试 resume AudioContext（绕过浏览器 autoplay 策略）
+  // 即使没有用户手势也试试，失败了没关系
+  if (ctx.state === 'suspended') {
+    ctx.resume().then(() => {
+      console.log('[audio-capture] ✅ AudioContext 已 resume');
+    }).catch((err) => {
+      console.warn('[audio-capture] AudioContext resume 失败（需要用户手势）:', err);
+    });
+  }
+
   startRecorder(session, onChunk);
 
   // 暂停/恢复跟随视频（但只影响 createMediaElementSource 路径）

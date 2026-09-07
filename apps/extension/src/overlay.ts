@@ -80,27 +80,29 @@ export class Overlay {
     this.el.style.display = 'block';
   }
 
-  /** 静音检测触发时显示 fallback 按钮（getDisplayMedia 需要用户手势） */
+  /** 显示 fallback 按钮（getDisplayMedia 需要用户手势） */
   showFallbackButton(onClick: () => void): void {
     if (this.fallbackBtn) return; // 已存在
     const btn = document.createElement('button');
     btn.id = FALLBACK_ID;
-    btn.textContent = '🔇 音频被网页加密，点击授权屏幕共享';
+    btn.innerHTML = '🎙️ 点击授权字幕音频捕获';
     Object.assign(btn.style, {
       position: 'absolute',
       left: '50%',
       top: '20%',
       transform: 'translateX(-50%)',
-      padding: '10px 20px',
-      background: '#ef4444',
+      padding: '12px 24px',
+      background: '#3b82f6',
       color: '#fff',
       border: 'none',
       borderRadius: '8px',
-      font: 'bold 14px -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif',
+      font: 'bold 15px -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif',
       cursor: 'pointer',
       zIndex: '2147483647',
-      boxShadow: '0 4px 16px rgba(239,68,68,0.4)',
+      boxShadow: '0 4px 16px rgba(59,130,246,0.5)',
       pointerEvents: 'auto',
+      maxWidth: '80%',
+      whiteSpace: 'nowrap',
     });
     btn.onclick = () => {
       console.log('[rt-sub] user clicked fallback button → getDisplayMedia');

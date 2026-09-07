@@ -11,7 +11,7 @@
  *
  * 一个页面可同时存在多个 video（例如 PIP、预告片），每个 video 独立 session。
  */
-import { attachToVideo, triggerDisplayMediaFallback, type Detacher } from './audio-capture';
+import { attachToVideo, triggerDisplayMediaFallback, installAutoplayResume, type Detacher } from './audio-capture';
 import { Overlay } from './overlay';
 import { Timeline } from './timeline';
 import { getSettings, onSettingsChanged } from './settings';
@@ -221,6 +221,21 @@ async function startOnVideo(video: HTMLVideoElement, settings: Settings): Promis
 
     // 监听 video 被移除（SPA 路由切换）
     video.addEventListener('emptied', () => stopOnVideo(video), { once: true });
+
+    // 立即显示授权按钮 —— 跨域视频 CORS 污染是常态，
+    // 让用户主动选择 getDisplayMedia（绕过 CORS），比等静音检测更可靠
+    overlay.showFallbackButton(async () => {
+      try {
+        const acSession = (window as any).__rtSubSession;
+        if (!acSession) { console.error(TAG, '无法找到 audio-capture session'); return; }
+        console.log(TAG, '🎙️ 用户主动触发 getDisplayMedia fallback');
+        await triggerDisplayMediaFallback(acSession, onChunk);
+        console.log(TAG, '✅ 已切换到 getDisplayMedia 音频源');
+        overlay.hideFallbackButton();
+      } catch (err) {
+        console.error(TAG, '❌ fallback 失败:', err);
+      }
+    });
   } catch (e) {
     console.error(TAG, '❌ attachToVideo 失败:', e);
     // overlay 已创建但没 session，清理一下
@@ -357,6 +372,8 @@ function onPageShowFromBfcache(e: PageTransitionEvent): void {
 (async function init() {
   try {
     console.log(TAG, '🚀 content script init — 页面 URL:', location.href);
+    // 注册首次用户手势时自动恢复 AudioContext（绕过浏览器 autoplay 策略）
+    installAutoplayResume();
     connectBgPort();
     const settings = await getSettings();
     console.log(TAG, `📥 加载 settings: enabled=${settings.enabled}`);
