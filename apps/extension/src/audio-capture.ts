@@ -123,25 +123,49 @@ export async function startWithDisplayMedia(
   onStarted: (sessionId: string) => void,
 ): Promise<void> {
   try {
-    console.log('[audio-capture] 🎙️ 调用 getDisplayMedia（video=1x1 极小化 GPU 开销）...');
+    console.log('[audio-capture] 🎙️ 调用 getDisplayMedia（ideal=16x16 最小化 GPU 开销）...');
 
-    // video 约束设为 1x1 1fps：GPU 几乎零开销，但浏览器仍会弹出标签页选择框
+    // getDisplayMedia 只支持 ideal 约束（不支持 min/exact）
+    // 用 ideal: 16x16 1fps —— 浏览器会尽量接近这个值，GPU 开销极小
     const stream = await (navigator.mediaDevices as any).getDisplayMedia({
-      video: { width: 1, height: 1, frameRate: 1 },
+      video: { width: { ideal: 16 }, height: { ideal: 16 }, frameRate: { ideal: 1 } },
       audio: true,
       preferCurrentTab: true,
     });
 
+    // 打印实际视频轨道参数，便于调试 Edge 是否忽略了约束
+    const videoTrack = stream.getVideoTracks()[0];
+    if (videoTrack) {
+      const settings = videoTrack.getSettings();
+      console.log('[audio-capture] 📹 实际视频轨道:', JSON.stringify({
+        width: settings.width, height: settings.height, frameRate: settings.frameRate,
+      }));
+      // 尝试用 applyConstraints 二次降分辨率（getDisplayMedia 返回后可以用 min/exact）
+      try {
+        await videoTrack.applyConstraints({
+          width: { ideal: 16 },
+          height: { ideal: 16 },
+          frameRate: { ideal: 1 },
+        });
+        const s2 = videoTrack.getSettings();
+        console.log('[audio-capture] 📹 applyConstraints 后:', JSON.stringify({
+          width: s2.width, height: s2.height, frameRate: s2.frameRate,
+        }));
+      } catch (err) {
+        console.warn('[audio-capture] applyConstraints 失败（不影响功能）:', err);
+      }
+    }
+
     const audioTracks = stream.getAudioTracks();
     if (audioTracks.length === 0) {
-      // 没音频轨道 → 停掉所有 track 释放 GPU
       stream.getTracks().forEach((t: MediaStreamTrack) => t.stop());
       throw new Error('getDisplayMedia 返回的流没有音频轨道，请确认选了"标签页"并勾选"分享音频"');
     }
 
-    // 停掉视频轨道（虽然已经是 1x1，但保险起见）
+    // 立刻停掉视频轨道 —— GPU 捕获到此为止，之后只保留音频
     stream.getVideoTracks().forEach((t: MediaStreamTrack) => t.stop());
     const audioOnlyStream = new MediaStream(audioTracks);
+    console.log('[audio-capture] ✅ 视频轨道已停止，只保留', audioTracks.length, '个音频轨道');
 
     // 停掉旧 recorder（如果之前有）
     try { if (session.recorder && session.recorder.state !== 'inactive') session.recorder.stop(); } catch { /* noop */ }
