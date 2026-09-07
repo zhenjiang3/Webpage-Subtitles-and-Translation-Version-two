@@ -2,7 +2,6 @@
   "manifest_version": 3,
   "name": "网页实时双语字幕",
   "version": "0.1.0",
-  "default_locale": "zh",
   "description": "打开任意视频网页 → 启动后端 → 实时 ASR + 中英日翻译，字幕叠加显示，无需上传视频。",
   "permissions": ["storage", "activeTab", "tabs", "alarms", "scripting"],
   "host_permissions": ["http://*/*", "https://*/*", "http://localhost:*/*", "ws://localhost:*/*"],
