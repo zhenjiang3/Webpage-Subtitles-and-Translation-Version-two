@@ -162,10 +162,22 @@ export async function startWithDisplayMedia(
       throw new Error('getDisplayMedia 返回的流没有音频轨道，请确认选了"标签页"并勾选"分享音频"');
     }
 
-    // 立刻停掉视频轨道 —— GPU 捕获到此为止，之后只保留音频
-    stream.getVideoTracks().forEach((t: MediaStreamTrack) => t.stop());
+    // ⚠️ 关键：用 enabled=false 而不是 stop()！
+    // 在 Edge/Chrome 中，stop() 视频轨道会杀死整个 getDisplayMedia 会话，
+    // 导致音频轨道也变成静音。enabled=false 只是不再捕获视频帧，
+    // 但会话保持活跃，音频轨道继续工作。
+    stream.getVideoTracks().forEach((t: MediaStreamTrack) => { t.enabled = false; });
     const audioOnlyStream = new MediaStream(audioTracks);
-    console.log('[audio-capture] ✅ 视频轨道已停止，只保留', audioTracks.length, '个音频轨道');
+    console.log('[audio-capture] ✅ 视频轨道已禁用（enabled=false），音频轨道继续工作');
+
+    // 诊断：打印音频轨道状态
+    const at = audioTracks[0];
+    console.log('[audio-capture] 🎵 音频轨道状态:', JSON.stringify({
+      readyState: at.readyState,
+      muted: at.muted,
+      label: at.label,
+      settings: at.getSettings(),
+    }));
 
     // 停掉旧 recorder（如果之前有）
     try { if (session.recorder && session.recorder.state !== 'inactive') session.recorder.stop(); } catch { /* noop */ }
