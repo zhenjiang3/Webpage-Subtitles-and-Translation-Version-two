@@ -153,10 +153,14 @@ export async function startWithDisplayMedia(
     // stop() 会杀死整个 getDisplayMedia 会话
     stream.getVideoTracks().forEach((t: MediaStreamTrack) => { t.enabled = false; });
 
-    // 诊断：打印禁用后的轨道状态
+    // 创建只含音频的 MediaStream 给 MediaRecorder
+    // Edge 的 MediaRecorder 不能接受"含禁用视频轨道 + audio-only mime"的 stream
+    // 但新 MediaStream 会保持对原始轨道的引用，不会断开音频源
+    const audioOnlyStream = new MediaStream(audioTracks);
+
     console.log('[audio-capture] 📹 视频轨道已禁用（enabled=false）');
-    console.log('[audio-capture] 📊 stream 总轨道数:', stream.getTracks().length,
-      '活跃轨道数:', stream.getTracks().filter(t => t.enabled && t.readyState === 'live').length);
+    console.log('[audio-capture] 📊 audioOnlyStream 轨道数:', audioOnlyStream.getTracks().length,
+      '活跃:', audioOnlyStream.getTracks().filter(t => t.enabled && t.readyState === 'live').length);
 
     // 停掉旧 recorder
     try { if (session.recorder && session.recorder.state !== 'inactive') session.recorder.stop(); } catch { /* noop */ }
@@ -167,9 +171,9 @@ export async function startWithDisplayMedia(
     // 停掉旧 displayMedia tracks
     session.displayMediaStream?.getTracks().forEach((t) => t.stop());
 
-    // 直接用原始 stream（含禁用的视频轨道 + 活跃的音频轨道）
-    session.stream = stream;
-    session.displayMediaStream = stream;
+    // MediaRecorder 用纯音频 stream，原始 stream 保持会话活跃
+    session.stream = audioOnlyStream;
+    session.displayMediaStream = stream; // 保留原始 stream 引用，detach 时 stop 所有 tracks
     session.chunkStartVideoSec = getVideoTime(session);
     session.started = true;
 
