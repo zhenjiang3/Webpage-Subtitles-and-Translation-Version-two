@@ -325,7 +325,18 @@ function onPageShowFromBfcache(e: PageTransitionEvent): void {
 
 (async function init() {
   try {
-    console.log(TAG, '🚀 content script init — 页面 URL:', location.href);
+    console.log(TAG, '🚀 v2.1 content script init — skip createMediaElementSource, use getDisplayMedia directly');
+    // 清理可能残留的旧 session（扩展刷新后旧 content script 可能还在跑）
+    try {
+      const oldSession = (window as any).__rtSubSession;
+      if (oldSession) {
+        console.warn(TAG, '🧹 发现残留旧 session，清理中...');
+        oldSession.displayMediaStream?.getTracks().forEach((t: MediaStreamTrack) => t.stop());
+        if (oldSession.requestDataTimer) window.clearInterval(oldSession.requestDataTimer);
+        if (oldSession.recorder && oldSession.recorder.state !== 'inactive') oldSession.recorder.stop();
+        (window as any).__rtSubSession = null;
+      }
+    } catch { /* noop */ }
     // 注册首次用户手势时自动恢复 AudioContext（绕过浏览器 autoplay 策略）
     installAutoplayResume();
     connectBgPort();
