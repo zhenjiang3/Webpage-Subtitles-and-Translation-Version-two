@@ -11,7 +11,7 @@
  *
  * 一个页面可同时存在多个 video（例如 PIP、预告片），每个 video 独立 session。
  */
-import { attachToVideo, triggerDisplayMediaFallback, installAutoplayResume, type Detacher } from './audio-capture';
+import { attachToVideo, startWithDisplayMedia, installAutoplayResume, type Detacher } from './audio-capture';
 import { Overlay } from './overlay';
 import { Timeline } from './timeline';
 import { getSettings, onSettingsChanged } from './settings';
@@ -155,17 +155,6 @@ async function startOnVideo(video: HTMLVideoElement, settings: Settings): Promis
     return;
   }
 
-  // 跨域视频：尝试加 crossOrigin，让 AudioContext 能拿到真实音频
-  // 注意：如果视频服务器没发 CORS 头，会触发 error event，后续 createMediaElementSource 会失败
-  try {
-    if (!video.crossOrigin) {
-      video.crossOrigin = 'anonymous';
-      console.log(TAG, '已设置 video.crossOrigin = "anonymous"');
-    }
-  } catch (e) {
-    console.warn(TAG, '设置 crossOrigin 失败（可能只读）:', e);
-  }
-
   console.log(TAG, '🎯 启动 audio capture on video', video.currentSrc?.slice(0, 80));
 
   const timeline = new Timeline();
@@ -191,7 +180,7 @@ async function startOnVideo(video: HTMLVideoElement, settings: Settings): Promis
       channels: 1,
     };
     sendToBg(startMsg);
-    console.log(TAG, `✅ session ${sessionId} 已创建，start 已发送`);
+    console.log(TAG, `✅ session ${sessionId} start 已发送到后端`);
   };
 
   const onEnd = (sessionId: string): void => {
@@ -201,6 +190,8 @@ async function startOnVideo(video: HTMLVideoElement, settings: Settings): Promis
   };
 
   try {
+    // attachToVideo 只创建 session，不启动 recorder
+    // 等用户点授权按钮后再走 getDisplayMedia
     const detacher = attachToVideo(video, {
       sourceLang: settings.sourceLang,
       targetLang: settings.targetLang,
@@ -217,28 +208,26 @@ async function startOnVideo(video: HTMLVideoElement, settings: Settings): Promis
     }, 200);
 
     sessions.set(video, { video, detacher, timeline, overlay, rafId, onChunk, onStart, onEnd });
-    console.log(TAG, '✅ session 已激活，开始捕获');
+    console.log(TAG, '✅ session 已创建，等用户授权 getDisplayMedia');
 
     // 监听 video 被移除（SPA 路由切换）
     video.addEventListener('emptied', () => stopOnVideo(video), { once: true });
 
-    // 立即显示授权按钮 —— 跨域视频 CORS 污染是常态，
-    // 让用户主动选择 getDisplayMedia（绕过 CORS），比等静音检测更可靠
+    // 立即显示授权按钮
     overlay.showFallbackButton(async () => {
       try {
         const acSession = (window as any).__rtSubSession;
         if (!acSession) { console.error(TAG, '无法找到 audio-capture session'); return; }
-        console.log(TAG, '🎙️ 用户主动触发 getDisplayMedia fallback');
-        await triggerDisplayMediaFallback(acSession, onChunk);
-        console.log(TAG, '✅ 已切换到 getDisplayMedia 音频源');
+        console.log(TAG, '🎙️ 用户点击授权，启动 getDisplayMedia');
+        await startWithDisplayMedia(acSession, onChunk, onStart);
+        console.log(TAG, '✅ getDisplayMedia 捕获已启动');
         overlay.hideFallbackButton();
       } catch (err) {
-        console.error(TAG, '❌ fallback 失败:', err);
+        console.error(TAG, '❌ getDisplayMedia 失败:', err);
       }
     });
   } catch (e) {
     console.error(TAG, '❌ attachToVideo 失败:', e);
-    // overlay 已创建但没 session，清理一下
     try { overlay.detach(); } catch { /* noop */ }
   }
 }
@@ -301,40 +290,6 @@ function observeDynamicVideos(): void {
   console.log(TAG, '✅ MutationObserver 已启动');
 }
 
-// ============ 启动 ============
-
-/** 从 sessions 中按 sessionId 查找 */
-function findSessionBySessionId(sid: string): VideoSession | undefined {
-  for (const s of sessions.values()) {
-    if (s.video.dataset.rtSessionId === sid) return s;
-  }
-  return undefined;
-}
-
-/** 静音事件：显示 fallback 按钮 */
-function onSilentDetected(e: Event): void {
-  const ce = e as CustomEvent<{ sessionId: string }>;
-  const sid = ce.detail?.sessionId;
-  if (!sid) return;
-  const sess = findSessionBySessionId(sid);
-  if (!sess) {
-    console.warn(TAG, 'silent-detected 但找不到 session:', sid);
-    return;
-  }
-  console.log(TAG, '🔇 检测到静音音频流（跨域 CORS 污染），显示 fallback 按钮');
-  sess.overlay.showFallbackButton(async () => {
-    try {
-      const acSession = (window as any).__rtSubSession;
-      if (!acSession) { console.error(TAG, '无法找到 audio-capture session'); return; }
-      await triggerDisplayMediaFallback(acSession, sess.onChunk);
-      console.log(TAG, '✅ 已切换到 getDisplayMedia 音频源，继续工作');
-      sess.overlay.hideFallbackButton();
-    } catch (err) {
-      console.error(TAG, '❌ fallback 失败:', err);
-    }
-  });
-}
-
 /** bfcache restore：页面从 back/forward cache 恢复时，Port 已死，需要重建 + 检查 displayMedia */
 function onPageShowFromBfcache(e: PageTransitionEvent): void {
   if (!e.persisted) return; // 不是 bfcache restore，忽略
@@ -344,28 +299,27 @@ function onPageShowFromBfcache(e: PageTransitionEvent): void {
   bgPort = null;
   // 重连 Port
   connectBgPort();
-  // 重发所有 start
-  resendAllStarts();
 
   // 检查 getDisplayMedia 是否还活着
-  if (!isDisplayMediaAlive()) {
+  const acSession = (window as any).__rtSubSession;
+  if (acSession?.started && !isDisplayMediaAlive()) {
     console.warn(TAG, '⚠️ getDisplayMedia 流已失效，需要用户重新授权');
-    // 提示用户：显示 fallback 按钮（用户点了之后重新触发 getDisplayMedia）
+    // 提示用户：重新显示授权按钮
     for (const s of sessions.values()) {
-      if (!s.overlay) continue;
       s.overlay.showFallbackButton(async () => {
         try {
-          const acSession = (window as any).__rtSubSession;
-          if (acSession) {
-            await triggerDisplayMediaFallback(acSession, s.onChunk);
-            console.log(TAG, '✅ 重新触发 getDisplayMedia 成功');
-            s.overlay.hideFallbackButton();
-          }
+          await startWithDisplayMedia(acSession, s.onChunk, s.onStart);
+          console.log(TAG, '✅ 重新触发 getDisplayMedia 成功');
+          s.overlay.hideFallbackButton();
         } catch (err) {
           console.error(TAG, '❌ 重试 getDisplayMedia 失败:', err);
         }
       });
     }
+  } else if (acSession?.started) {
+    // getDisplayMedia 还活着 → 只需要重发 start 让后端知道
+    console.log(TAG, '📡 getDisplayMedia 流仍存活，重发 start 给后端');
+    resendAllStarts();
   }
 }
 
@@ -380,7 +334,6 @@ function onPageShowFromBfcache(e: PageTransitionEvent): void {
     await applySettings(settings);
     onSettingsChanged((next) => { void applySettings(next); });
     observeDynamicVideos();
-    document.addEventListener('rt-sub-silent-detected', onSilentDetected);
     window.addEventListener('pageshow', onPageShowFromBfcache);
     console.log(TAG, '🎉 content script 初始化完成');
   } catch (e) {
