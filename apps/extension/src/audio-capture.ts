@@ -1,17 +1,15 @@
 /**
  * 音频捕获器
  * ─────────────────────────────────────────────────────────────────
- * 策略：彻底跳过 createMediaElementSource（天生有 CORS + AudioContext
- * 挂起 + 破坏视频原生音频路由三大问题），直接用 getDisplayMedia
- * 抓标签页音频（绕过 CORS，抓浏览器最终渲染后的音频输出）。
+ * 策略：用 getDisplayMedia 抓标签页音频，直接在原始 stream 上录制。
+ * 视频轨道设为 enabled=false（不 stop，stop 会杀死整个会话），
+ * MediaRecorder 录原始 stream（含禁用的视频轨道 + 活跃的音频轨道）。
  *
- * getDisplayMedia 的 video 约束设为 1x1 1fps，最小化 GPU 开销，
- * 避免视频卡顿。
- *
- * 每 12 秒调用 recorder.requestData() 切出一个 webm/opus 块，
- * 在切那一刻记录 video.currentTime 作为块起点，确保时间戳映射精确。
- *
- * 流程：attachToVideo → 等用户点授权按钮 → startWithDisplayMedia → 开始捕获
+ * 关键修复：
+ * 1. 不用 new MediaStream(audioTracks) — Edge 可能断开连接
+ * 2. 用 start(60000) 而不是 start(0) — 避免 Edge 默认 100ms timeslice
+ * 3. 不 stop() 视频轨道 — 会杀死 getDisplayMedia 会话
+ *    用 enabled=false — 保持会话活跃，GPU 开销极小
  */
 import type { ChunkMetaMsg, SourceLang, LangCode, AudioFormat } from './messages';
 
@@ -30,12 +28,12 @@ export interface Detacher {
 export interface AudioSession {
   sessionId: string;
   recorder: MediaRecorder | null;
-  stream: MediaStream | null;        // 当前录制用的流（getDisplayMedia 的纯音频流）
-  displayMediaStream: MediaStream | null; // getDisplayMedia 返回的完整流（detach 时 stop 所有 tracks）
+  stream: MediaStream | null;
+  displayMediaStream: MediaStream | null;
   chunkIdCounter: number;
   chunkStartVideoSec: number;
   requestDataTimer: number | null;
-  started: boolean;                  // 是否已启动 getDisplayMedia 捕获
+  started: boolean;
   opts: CaptureOpts;
 }
 
@@ -58,18 +56,21 @@ function pickMime(): string {
 function getVideoTime(session: AudioSession): number {
   const v = (session as any)._video as HTMLVideoElement | undefined;
   if (v && v.readyState > 0 && !isNaN(v.currentTime)) return v.currentTime;
-  // video 不可用：用 performance.now() 近似
   return (performance.now() / 1000) % 36000;
 }
 
 /**
- * 启动 MediaRecorder，按 12s 间隔驱动 requestData
+ * 启动 MediaRecorder
+ *
+ * 关键：用 start(60000) 让 MediaRecorder 缓冲 60 秒的数据，
+ * 然后我们每 12 秒手动 requestData() 切一块出来。
+ * 这样避免 Edge 把 start(0) 解释成默认 100ms timeslice。
  */
 function startRecorder(
   session: AudioSession,
   onChunk: (meta: ChunkMetaMsg, blob: ArrayBuffer) => void,
 ): void {
-  if (!session.stream) throw new Error('session.stream 为空，无法启动 recorder');
+  if (!session.stream) throw new Error('session.stream 为空');
 
   const mime = pickMime();
   const recorder = new MediaRecorder(session.stream, {
@@ -91,31 +92,32 @@ function startRecorder(
       chunkDurationSec: chunkEndVideoSec - session.chunkStartVideoSec,
     };
     const buf = await e.data.arrayBuffer();
+    // 打印原始 Blob 大小，便于诊断
+    console.log('[audio-capture] 📦 ondataavailable blob size:', e.data.size, 'bytes');
     onChunk(meta, buf);
     session.chunkStartVideoSec = chunkEndVideoSec;
   };
 
-  recorder.start(0);
+  // 用 60000ms timeslice：MediaRecorder 会每 60 秒自动 emit 一次，
+  // 但我们每 12 秒 requestData() 提前切走数据
+  recorder.start(60000);
   session.recorder = recorder;
 
-  // 手动驱动分块
+  console.log('[audio-capture] ✅ MediaRecorder 已启动（timeslice=60s, 每12s requestData）');
+
   if (session.requestDataTimer) window.clearInterval(session.requestDataTimer);
   session.requestDataTimer = window.setInterval(() => {
     if (recorder.state === 'recording') {
       try { recorder.requestData(); } catch { /* noop */ }
     }
   }, CHUNK_INTERVAL_MS);
-
-  console.log('[audio-capture] ✅ MediaRecorder 已启动');
 }
 
 /**
- * 核心：调用 getDisplayMedia 抓标签页音频，启动捕获。
+ * 调用 getDisplayMedia，直接在原始 stream 上启动录制。
  *
- * video 约束设为 1x1 1fps —— 浏览器仍会让用户选标签页，
- * 但 GPU 只需抓一个 1 像素的"视频"，开销接近 0，彻底解决卡顿。
- *
- * 必须从用户手势（点击事件）中调用，否则浏览器会拒绝。
+ * 不创建 new MediaStream — 直接用 getDisplayMedia 返回的 stream，
+ * 视频轨道设 enabled=false（禁用但不停止，保持会话活跃）。
  */
 export async function startWithDisplayMedia(
   session: AudioSession,
@@ -123,38 +125,13 @@ export async function startWithDisplayMedia(
   onStarted: (sessionId: string) => void,
 ): Promise<void> {
   try {
-    console.log('[audio-capture] 🎙️ 调用 getDisplayMedia（ideal=16x16 最小化 GPU 开销）...');
+    console.log('[audio-capture] 🎙️ 调用 getDisplayMedia...');
 
-    // getDisplayMedia 只支持 ideal 约束（不支持 min/exact）
-    // 用 ideal: 16x16 1fps —— 浏览器会尽量接近这个值，GPU 开销极小
     const stream = await (navigator.mediaDevices as any).getDisplayMedia({
       video: { width: { ideal: 16 }, height: { ideal: 16 }, frameRate: { ideal: 1 } },
       audio: true,
       preferCurrentTab: true,
     });
-
-    // 打印实际视频轨道参数，便于调试 Edge 是否忽略了约束
-    const videoTrack = stream.getVideoTracks()[0];
-    if (videoTrack) {
-      const settings = videoTrack.getSettings();
-      console.log('[audio-capture] 📹 实际视频轨道:', JSON.stringify({
-        width: settings.width, height: settings.height, frameRate: settings.frameRate,
-      }));
-      // 尝试用 applyConstraints 二次降分辨率（getDisplayMedia 返回后可以用 min/exact）
-      try {
-        await videoTrack.applyConstraints({
-          width: { ideal: 16 },
-          height: { ideal: 16 },
-          frameRate: { ideal: 1 },
-        });
-        const s2 = videoTrack.getSettings();
-        console.log('[audio-capture] 📹 applyConstraints 后:', JSON.stringify({
-          width: s2.width, height: s2.height, frameRate: s2.frameRate,
-        }));
-      } catch (err) {
-        console.warn('[audio-capture] applyConstraints 失败（不影响功能）:', err);
-      }
-    }
 
     const audioTracks = stream.getAudioTracks();
     if (audioTracks.length === 0) {
@@ -162,34 +139,36 @@ export async function startWithDisplayMedia(
       throw new Error('getDisplayMedia 返回的流没有音频轨道，请确认选了"标签页"并勾选"分享音频"');
     }
 
-    // ⚠️ 关键：用 enabled=false 而不是 stop()！
-    // 在 Edge/Chrome 中，stop() 视频轨道会杀死整个 getDisplayMedia 会话，
-    // 导致音频轨道也变成静音。enabled=false 只是不再捕获视频帧，
-    // 但会话保持活跃，音频轨道继续工作。
-    stream.getVideoTracks().forEach((t: MediaStreamTrack) => { t.enabled = false; });
-    const audioOnlyStream = new MediaStream(audioTracks);
-    console.log('[audio-capture] ✅ 视频轨道已禁用（enabled=false），音频轨道继续工作');
-
-    // 诊断：打印音频轨道状态
+    // 诊断：打印原始音频轨道状态
     const at = audioTracks[0];
-    console.log('[audio-capture] 🎵 音频轨道状态:', JSON.stringify({
+    console.log('[audio-capture] 🎵 原始音频轨道:', JSON.stringify({
       readyState: at.readyState,
       muted: at.muted,
       label: at.label,
-      settings: at.getSettings(),
+      deviceId: at.getSettings()?.deviceId,
+      sampleRate: at.getSettings()?.sampleRate,
     }));
 
-    // 停掉旧 recorder（如果之前有）
+    // 关键：只禁用视频轨道（enabled=false），不 stop！
+    // stop() 会杀死整个 getDisplayMedia 会话
+    stream.getVideoTracks().forEach((t: MediaStreamTrack) => { t.enabled = false; });
+
+    // 诊断：打印禁用后的轨道状态
+    console.log('[audio-capture] 📹 视频轨道已禁用（enabled=false）');
+    console.log('[audio-capture] 📊 stream 总轨道数:', stream.getTracks().length,
+      '活跃轨道数:', stream.getTracks().filter(t => t.enabled && t.readyState === 'live').length);
+
+    // 停掉旧 recorder
     try { if (session.recorder && session.recorder.state !== 'inactive') session.recorder.stop(); } catch { /* noop */ }
     if (session.requestDataTimer) {
       window.clearInterval(session.requestDataTimer);
       session.requestDataTimer = null;
     }
-    // 停掉旧 displayMedia tracks（如果之前有）
+    // 停掉旧 displayMedia tracks
     session.displayMediaStream?.getTracks().forEach((t) => t.stop());
 
-    // 切换到新流
-    session.stream = audioOnlyStream;
+    // 直接用原始 stream（含禁用的视频轨道 + 活跃的音频轨道）
+    session.stream = stream;
     session.displayMediaStream = stream;
     session.chunkStartVideoSec = getVideoTime(session);
     session.started = true;
@@ -197,8 +176,7 @@ export async function startWithDisplayMedia(
     // 启动 recorder
     startRecorder(session, onChunk);
 
-    // 关键！启动后立即重发 start 消息，确保后端 WebSocket 侧有 session 上下文
-    // （如果 WebSocket 之前重连过，后端可能丢了 session 状态）
+    // 重发 start 消息
     onStarted(session.sessionId);
 
     console.log('[audio-capture] ✅ getDisplayMedia 捕获已启动，sessionId=', session.sessionId);
@@ -209,9 +187,7 @@ export async function startWithDisplayMedia(
   }
 }
 
-/**
- * 创建一个 session（不启动 recorder，等用户点授权按钮后再启动）
- */
+/** 创建 session（不启动 recorder，等用户授权） */
 export function attachToVideo(
   video: HTMLVideoElement,
   opts: CaptureOpts,
@@ -232,14 +208,12 @@ export function attachToVideo(
     started: false,
     opts,
   };
-  (session as any)._video = video; // 存 video 引用给 getVideoTime 用
+  (session as any)._video = video;
 
   try { video.dataset.rtSessionId = sessionId; } catch { /* noop */ }
-
-  // 把 session 暴露到 window 上，供 overlay 按钮点击后调用 startWithDisplayMedia
   (window as any).__rtSubSession = session;
 
-  console.log('[audio-capture] 📍 session 已创建，等用户授权 getDisplayMedia:', sessionId);
+  console.log('[audio-capture] 📍 session 已创建:', sessionId);
 
   return () => {
     try { if (video.dataset.rtSessionId === sessionId) delete video.dataset.rtSessionId; } catch { /* noop */ }
@@ -254,7 +228,5 @@ export function attachToVideo(
   };
 }
 
-/** 监听 document 首次用户手势 → 占位（已不需要恢复 AudioContext，因为我们不用 createMediaElementSource） */
-export function installAutoplayResume(): void {
-  // 保留导出以兼容 content.ts 的 import，但实际已不需要
-}
+/** 占位（无需恢复 AudioContext） */
+export function installAutoplayResume(): void { }
