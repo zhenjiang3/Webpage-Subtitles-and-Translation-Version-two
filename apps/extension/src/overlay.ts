@@ -8,6 +8,7 @@
 import type { AbsoluteCue } from './timeline';
 
 const OVERLAY_ID = 'rt-subtitle-overlay';
+const FALLBACK_ID = 'rt-subtitle-fallback';
 
 export class Overlay {
   private el: HTMLDivElement;
@@ -15,6 +16,7 @@ export class Overlay {
   private transEl: HTMLDivElement;
   private currentHost: ParentNode = document.body;
   private rafScheduled = false;
+  private fallbackBtn: HTMLButtonElement | null = null;
 
   constructor() {
     this.el = document.createElement('div');
@@ -76,6 +78,43 @@ export class Overlay {
     this.transEl.textContent = cue.translated ?? '';
     this.transEl.style.display = cue.translated ? 'block' : 'none';
     this.el.style.display = 'block';
+  }
+
+  /** 静音检测触发时显示 fallback 按钮（getDisplayMedia 需要用户手势） */
+  showFallbackButton(onClick: () => void): void {
+    if (this.fallbackBtn) return; // 已存在
+    const btn = document.createElement('button');
+    btn.id = FALLBACK_ID;
+    btn.textContent = '🔇 音频被网页加密，点击授权屏幕共享';
+    Object.assign(btn.style, {
+      position: 'absolute',
+      left: '50%',
+      top: '20%',
+      transform: 'translateX(-50%)',
+      padding: '10px 20px',
+      background: '#ef4444',
+      color: '#fff',
+      border: 'none',
+      borderRadius: '8px',
+      font: 'bold 14px -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif',
+      cursor: 'pointer',
+      zIndex: '2147483647',
+      boxShadow: '0 4px 16px rgba(239,68,68,0.4)',
+      pointerEvents: 'auto',
+    });
+    btn.onclick = () => {
+      console.log('[rt-sub] user clicked fallback button → getDisplayMedia');
+      onClick();
+      btn.remove();
+      this.fallbackBtn = null;
+    };
+    document.body.appendChild(btn);
+    this.fallbackBtn = btn;
+  }
+
+  hideFallbackButton(): void {
+    this.fallbackBtn?.remove();
+    this.fallbackBtn = null;
   }
 
   /** 定期把 overlay 移到 video 底部居中位置 */

@@ -11,7 +11,7 @@
  *
  * 一个页面可同时存在多个 video（例如 PIP、预告片），每个 video 独立 session。
  */
-import { attachToVideo, type Detacher } from './audio-capture';
+import { attachToVideo, triggerDisplayMediaFallback, type Detacher } from './audio-capture';
 import { Overlay } from './overlay';
 import { Timeline } from './timeline';
 import { getSettings, onSettingsChanged } from './settings';
@@ -35,6 +35,10 @@ interface VideoSession {
   timeline: Timeline;
   overlay: Overlay;
   rafId: number;
+  // 存回调引用，fallback 时需要重新传给 triggerDisplayMediaFallback
+  onChunk: (meta: ChunkMetaMsg, buffer: ArrayBuffer) => void;
+  onStart: (sessionId: string) => void;
+  onEnd: (sessionId: string) => void;
 }
 
 const sessions = new Map<HTMLVideoElement, VideoSession>();
@@ -188,7 +192,7 @@ async function startOnVideo(video: HTMLVideoElement, settings: Settings): Promis
       overlay.render(cue);
     }, 200);
 
-    sessions.set(video, { video, detacher, timeline, overlay, rafId });
+    sessions.set(video, { video, detacher, timeline, overlay, rafId, onChunk, onStart, onEnd });
     console.log(TAG, '✅ session 已激活，开始捕获');
 
     // 监听 video 被移除（SPA 路由切换）
@@ -260,6 +264,51 @@ function observeDynamicVideos(): void {
 
 // ============ 启动 ============
 
+/** 从 sessions 中按 sessionId 查找 */
+function findSessionBySessionId(sid: string): VideoSession | undefined {
+  for (const s of sessions.values()) {
+    if (s.video.dataset.rtSessionId === sid) return s;
+  }
+  return undefined;
+}
+
+/** 静音事件：显示 fallback 按钮 */
+function onSilentDetected(e: Event): void {
+  const ce = e as CustomEvent<{ sessionId: string }>;
+  const sid = ce.detail?.sessionId;
+  if (!sid) return;
+  const sess = findSessionBySessionId(sid);
+  if (!sess) {
+    console.warn(TAG, 'silent-detected 但找不到 session:', sid);
+    return;
+  }
+  console.log(TAG, '🔇 检测到静音音频流（跨域 CORS 污染），显示 fallback 按钮');
+  sess.overlay.showFallbackButton(async () => {
+    // 用户点击按钮 → 用户手势 → getDisplayMedia 可用
+    try {
+      // 从 window 上取 audio-capture 的内部 session
+      const acSession = (window as any).__rtSubSession;
+      if (!acSession) {
+        console.error(TAG, '无法找到 audio-capture session');
+        return;
+      }
+      await triggerDisplayMediaFallback(acSession, sess.onChunk);
+      console.log(TAG, '✅ 已切换到 getDisplayMedia 音频源，继续工作');
+      sess.overlay.hideFallbackButton();
+    } catch (err) {
+      console.error(TAG, '❌ fallback 失败:', err);
+      // 失败后重新显示按钮让用户重试
+      sess.overlay.showFallbackButton(async () => {
+        try {
+          const acSession2 = (window as any).__rtSubSession;
+          if (acSession2) await triggerDisplayMediaFallback(acSession2, sess.onChunk);
+          sess.overlay.hideFallbackButton();
+        } catch (e2) { console.error(TAG, '重试也失败:', e2); }
+      });
+    }
+  });
+}
+
 (async function init() {
   try {
     console.log(TAG, '🚀 content script init — 页面 URL:', location.href);
@@ -269,6 +318,8 @@ function observeDynamicVideos(): void {
     await applySettings(settings);
     onSettingsChanged((next) => { void applySettings(next); });
     observeDynamicVideos();
+    // 监听静音检测事件
+    document.addEventListener('rt-sub-silent-detected', onSilentDetected);
     console.log(TAG, '🎉 content script 初始化完成');
   } catch (e) {
     console.error(TAG, '❌ 初始化失败:', e);
