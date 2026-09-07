@@ -101,13 +101,23 @@ function connectWs(): void {
 }
 
 function sendWs(msg: WsClientMsg): void {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  try { ws.send(JSON.stringify(msg)); } catch { /* noop */ }
+  if (!ws) {
+    console.warn('[bg] sendWs 跳过: ws=null');
+    return;
+  }
+  if (ws.readyState !== WebSocket.OPEN) {
+    console.warn(`[bg] sendWs 跳过: readyState=${ws.readyState} (OPEN=1)`);
+    return;
+  }
+  try { ws.send(JSON.stringify(msg)); } catch (e) { console.error('[bg] sendWs 异常:', e); }
 }
 
 function sendWsBinary(buffer: ArrayBuffer): void {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  try { ws.send(buffer); } catch { /* noop */ }
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.warn(`[bg] sendWsBinary 跳过: readyState=${ws?.readyState ?? 'null'}`);
+    return;
+  }
+  try { ws.send(buffer); } catch (e) { console.error('[bg] sendWsBinary 异常:', e); }
 }
 
 function sendWsChunk(meta: ChunkMetaMsg, buffer: ArrayBuffer): void {
@@ -169,7 +179,9 @@ chrome.runtime.onConnect.addListener((port: chrome.runtime.Port) => {
 
 function handleContentMsg(msg: ContentToBgMsg): void {
   if (!msg || typeof msg !== 'object') return;
-  switch ((msg as any).kind) {
+  const kind = (msg as any).kind;
+  console.log(`[bg] 收到 Port 消息 kind=${kind} wsConnected=${wsConnected}`);
+  switch (kind) {
     case 'start': {
       const s = msg as StartMsg;
       console.log(`[bg] 📨 start session=${s.sessionId}`);

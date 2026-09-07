@@ -55,10 +55,15 @@ function connectBgPort(): chrome.runtime.Port | null {
   try {
     bgPort = chrome.runtime.connect({ name: 'content-bg' });
     bgPort.onDisconnect.addListener(() => {
-      console.warn(TAG, 'Port 断开，将在 3s 后重连');
+      console.warn(TAG, 'Port 断开，将在 1s 后重连');
       bgPort = null;
       if (portRetryTimer) window.clearTimeout(portRetryTimer);
-      portRetryTimer = window.setTimeout(connectBgPort, 3000);
+      portRetryTimer = window.setTimeout(() => {
+        connectBgPort();
+        // 重连成功后，把所有 session 的 start 重新发给 background
+        // （bfcache 或 service worker 重启后，background 丢了所有 session 状态）
+        resendAllStarts();
+      }, 1000);
     });
     bgPort.onMessage.addListener((msg: BgToContentMsg) => {
       handleBgMessage(msg);
@@ -69,6 +74,25 @@ function connectBgPort(): chrome.runtime.Port | null {
     console.error(TAG, '❌ 连接 background Port 失败:', e);
     return null;
   }
+}
+
+/** Port 重连后，重发所有 session 的 start 消息 */
+function resendAllStarts(): void {
+  if (!currentSettings?.enabled) return;
+  console.log(TAG, '🔁 重发所有 session 的 start 消息');
+  for (const s of sessions.values()) {
+    // 调 attachToVideo 里存的 onStart 回调
+    s.onStart(s.video.dataset.rtSessionId || '');
+  }
+}
+
+/** 检测 getDisplayMedia 流是否还活着（bfcache 后可能被浏览器吊销） */
+function isDisplayMediaAlive(): boolean {
+  const acSession = (window as any).__rtSubSession;
+  if (!acSession?.displayMediaStream) return true; // 没有 displayMedia 就不算
+  const tracks = acSession.displayMediaStream.getAudioTracks();
+  if (tracks.length === 0) return false;
+  return tracks.some((t: MediaStreamTrack) => t.readyState === 'live');
 }
 
 function sendToBg(msg: ContentToBgMsg, buffer?: ArrayBuffer): void {
@@ -284,29 +308,50 @@ function onSilentDetected(e: Event): void {
   }
   console.log(TAG, '🔇 检测到静音音频流（跨域 CORS 污染），显示 fallback 按钮');
   sess.overlay.showFallbackButton(async () => {
-    // 用户点击按钮 → 用户手势 → getDisplayMedia 可用
     try {
-      // 从 window 上取 audio-capture 的内部 session
       const acSession = (window as any).__rtSubSession;
-      if (!acSession) {
-        console.error(TAG, '无法找到 audio-capture session');
-        return;
-      }
+      if (!acSession) { console.error(TAG, '无法找到 audio-capture session'); return; }
       await triggerDisplayMediaFallback(acSession, sess.onChunk);
       console.log(TAG, '✅ 已切换到 getDisplayMedia 音频源，继续工作');
       sess.overlay.hideFallbackButton();
     } catch (err) {
       console.error(TAG, '❌ fallback 失败:', err);
-      // 失败后重新显示按钮让用户重试
-      sess.overlay.showFallbackButton(async () => {
-        try {
-          const acSession2 = (window as any).__rtSubSession;
-          if (acSession2) await triggerDisplayMediaFallback(acSession2, sess.onChunk);
-          sess.overlay.hideFallbackButton();
-        } catch (e2) { console.error(TAG, '重试也失败:', e2); }
-      });
     }
   });
+}
+
+/** bfcache restore：页面从 back/forward cache 恢复时，Port 已死，需要重建 + 检查 displayMedia */
+function onPageShowFromBfcache(e: PageTransitionEvent): void {
+  if (!e.persisted) return; // 不是 bfcache restore，忽略
+  console.log(TAG, '♻️ 页面从 bfcache 恢复，重建 Port + 检查 getDisplayMedia');
+  // 强制断开旧 Port（可能还没触发 onDisconnect）
+  try { bgPort?.disconnect(); } catch { /* noop */ }
+  bgPort = null;
+  // 重连 Port
+  connectBgPort();
+  // 重发所有 start
+  resendAllStarts();
+
+  // 检查 getDisplayMedia 是否还活着
+  if (!isDisplayMediaAlive()) {
+    console.warn(TAG, '⚠️ getDisplayMedia 流已失效，需要用户重新授权');
+    // 提示用户：显示 fallback 按钮（用户点了之后重新触发 getDisplayMedia）
+    for (const s of sessions.values()) {
+      if (!s.overlay) continue;
+      s.overlay.showFallbackButton(async () => {
+        try {
+          const acSession = (window as any).__rtSubSession;
+          if (acSession) {
+            await triggerDisplayMediaFallback(acSession, s.onChunk);
+            console.log(TAG, '✅ 重新触发 getDisplayMedia 成功');
+            s.overlay.hideFallbackButton();
+          }
+        } catch (err) {
+          console.error(TAG, '❌ 重试 getDisplayMedia 失败:', err);
+        }
+      });
+    }
+  }
 }
 
 (async function init() {
@@ -318,8 +363,8 @@ function onSilentDetected(e: Event): void {
     await applySettings(settings);
     onSettingsChanged((next) => { void applySettings(next); });
     observeDynamicVideos();
-    // 监听静音检测事件
     document.addEventListener('rt-sub-silent-detected', onSilentDetected);
+    window.addEventListener('pageshow', onPageShowFromBfcache);
     console.log(TAG, '🎉 content script 初始化完成');
   } catch (e) {
     console.error(TAG, '❌ 初始化失败:', e);

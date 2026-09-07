@@ -153,12 +153,12 @@ export async function triggerDisplayMediaFallback(
     const audioTracks = stream.getAudioTracks();
     if (audioTracks.length === 0) {
       // 先停掉所有 track，否则 GPU 还在抓视频帧
-      stream.getTracks().forEach((t) => t.stop());
+      stream.getTracks().forEach((t: MediaStreamTrack) => t.stop());
       throw new Error('getDisplayMedia 返回的流没有音频轨道');
     }
 
     // 只留音频轨道，立刻释放视频轨道 → 解决 GPU 过载导致的视频卡顿
-    stream.getVideoTracks().forEach((t) => t.stop());
+    stream.getVideoTracks().forEach((t: MediaStreamTrack) => t.stop());
     const audioOnlyStream = new MediaStream(audioTracks);
 
     // 停掉旧 recorder

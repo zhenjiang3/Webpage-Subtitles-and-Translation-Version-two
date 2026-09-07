@@ -53,11 +53,13 @@ export async function handleConnection(ws: WebSocket, ctx: ServerContext): Promi
       // 二进制帧：必须有一条待配对的 chunk meta
       if (!pendingChunk) {
         // 没有等待中的 chunk 头，忽略（避免崩溃）
+        console.warn('[ws] 收到二进制帧但无待配对 chunk meta，忽略');
         return;
       }
       const meta = pendingChunk.meta;
       pendingChunk = null;
       const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as unknown as ArrayLike<number>);
+      console.log(`[ws] 二进制帧到达 chunkId=${meta.chunkId} size=${buf.length}B`);
 
       // 入队串行执行
       const run = (session ?? defaultSession(meta)).chain
@@ -106,6 +108,7 @@ export async function handleConnection(ws: WebSocket, ctx: ServerContext): Promi
           channels: Number(msg.channels ?? 1),
           chain: Promise.resolve(),
         };
+        console.log(`[ws] 📨 start: session=${session.sessionId} ${session.sourceLang}→${session.targetLang}`);
         sendStatus(ws, `会话 ${session.sessionId} 已启动：${session.sourceLang} → ${session.targetLang}`);
         break;
       }
@@ -123,6 +126,7 @@ export async function handleConnection(ws: WebSocket, ctx: ServerContext): Promi
           sampleRate: session?.sampleRate ?? Number(msg.sampleRate ?? 48000),
           channels: session?.channels ?? Number(msg.channels ?? 1),
         };
+        console.log(`[ws] 📨 chunk meta: chunkId=${meta.chunkId} duration=${meta.chunkDurationSec.toFixed(1)}s`);
         pendingChunk = { meta };
         break;
       }
